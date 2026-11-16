@@ -6,6 +6,7 @@ import { Suspense, useEffect, useState } from "react";
 import type { AccountOption } from "@/components/account-select";
 import { ZernioConnection } from "@/components/zernio-connection";
 import { InstagramConnectNotice } from "@/components/instagram-connect-notice";
+import ErrorState from "@/components/ui/error-state";
 
 interface SettingsData {
   workspace: {
@@ -18,12 +19,14 @@ interface SettingsData {
     instagramId: string;
     tokenExpiresAt: string | null;
     webhookSubscribed: boolean;
+    isUnifiedLogin?: boolean;
   } | null;
   instagramAccounts: Array<
     AccountOption & {
       provider?: "META" | "ZERNIO";
       tokenExpiresAt: string | null;
       webhookSubscribed: boolean;
+      isUnifiedLogin?: boolean;
     }
   >;
 }
@@ -56,21 +59,47 @@ export default function SettingsPage() {
     null
   );
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState<"ADMIN" | "MEMBER">("MEMBER");
   const [memberError, setMemberError] = useState<string | null>(null);
+  const [disconnectError, setDisconnectError] = useState<string | null>(null);
+  const [unifiedToken, setUnifiedToken] = useState("");
+  const [unifiedAccountId, setUnifiedAccountId] = useState("");
+  const [unifiedAccounts, setUnifiedAccounts] = useState<
+    Array<{ id: string; username: string }>
+  >([]);
+  const [unifiedError, setUnifiedError] = useState<string | null>(null);
+
+  async function loadSettings() {
+    setLoading(true);
+    setLoadError(false);
+    try {
+      const [statsPayload, membersPayload] = await Promise.all([
+        fetch("/api/dashboard/stats").then((res) => res.json()),
+        fetch("/api/workspace/members").then((res) => res.json()),
+      ]);
+      if (statsPayload.success) setData(statsPayload.data);
+      if (membersPayload.success) setMembersData(membersPayload.data);
+      if (!statsPayload.success || !membersPayload.success) {
+        setLoadError(true);
+      }
+    } catch (err) {
+      console.error("Failed to load settings:", err);
+      setLoadError(true);
+    } finally {
+      setLoading(false);
+    }
+  }
 
   useEffect(() => {
-    Promise.all([
-      fetch("/api/dashboard/stats").then((res) => res.json()),
-      fetch("/api/workspace/members").then((res) => res.json()),
-    ])
-      .then(([statsPayload, membersPayload]) => {
-        if (statsPayload.success) setData(statsPayload.data);
-        if (membersPayload.success) setMembersData(membersPayload.data);
-      })
-      .finally(() => setLoading(false));
+    // Deferred a tick so the initial state write doesn't cascade-render;
+    // same convention as the campaigns/logs pages.
+    const timer = window.setTimeout(() => {
+      void loadSettings();
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, []);
 
   async function refreshMembers() {
@@ -85,12 +114,66 @@ export default function SettingsPage() {
     }
 
     setBusy(`disconnect:${instagramAccountId}`);
-    await fetch("/api/instagram/disconnect", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ instagramAccountId }),
-    });
-    window.location.reload();
+    setDisconnectError(null);
+    try {
+      const res = await fetch("/api/instagram/disconnect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ instagramAccountId }),
+      });
+      const payload = await res.json().catch(() => null);
+      // Only reload on a confirmed success — a failed disconnect used to
+      // look identical to a successful one.
+      if (res.ok && payload?.success !== false) {
+        window.location.reload();
+        return;
+      }
+      setDisconnectError(
+        payload?.error ?? t("Could not disconnect this account. Please try again.")
+      );
+    } catch (err) {
+      console.error("Failed to disconnect:", err);
+      setDisconnectError(t("Could not disconnect this account. Please try again."));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function connectUnifiedToken(event: React.FormEvent) {
+    event.preventDefault();
+    setUnifiedError(null);
+    setBusy("unified");
+    try {
+      const res = await fetch("/api/instagram/unified-token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          token: unifiedToken,
+          ...(unifiedAccountId ? { instagramId: unifiedAccountId } : {}),
+        }),
+      });
+      const payload = await res.json().catch(() => null);
+      if (res.ok && payload?.success) {
+        // The token is write-only: clear it before the reload, and never
+        // render it back.
+        setUnifiedToken("");
+        window.location.reload();
+        return;
+      }
+      if (Array.isArray(payload?.accounts) && payload.accounts.length > 0) {
+        setUnifiedAccounts(payload.accounts);
+        setUnifiedAccountId(payload.accounts[0].id);
+      }
+      setUnifiedError(
+        payload?.message ??
+          t("Could not connect this account. Please try again.")
+      );
+    } catch (err) {
+      console.error("Failed to connect with Unified Login:", err);
+      setUnifiedError(t("Could not connect this account. Please try again."));
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function inviteMember(event: React.FormEvent) {
@@ -127,6 +210,11 @@ export default function SettingsPage() {
     return <div className="panel rounded p-8 h-64" />;
   }
 
+  // A failed load must not render as blank sections.
+  if (loadError && !data && !membersData) {
+    return <ErrorState onRetry={() => void loadSettings()} />;
+  }
+
   const accounts = data?.instagramAccounts ?? [];
   const canManageMembers =
     membersData?.currentUserRole === "OWNER" ||
@@ -140,6 +228,18 @@ export default function SettingsPage() {
       <Suspense fallback={null}>
         <InstagramConnectNotice />
       </Suspense>
+
+      {loadError && (
+        <div role="alert" className="rounded-lg border border-error/20 bg-error/10 p-3 text-sm text-error">
+          {t("Failed to load this page. Please try again.")}
+        </div>
+      )}
+
+      {disconnectError && (
+        <div role="alert" className="rounded-lg border border-error/20 bg-error/10 p-3 text-sm text-error">
+          {disconnectError}
+        </div>
+      )}
 
       <section className="panel rounded p-4 sm:p-6 space-y-3">
         <h2 className="text-base font-semibold">{t("Interface language")}</h2>
@@ -199,10 +299,21 @@ export default function SettingsPage() {
                     @{account.username}
                   </p>
                   <p className="mt-1 text-xs text-muted">
-                    {account.provider === "ZERNIO" ? t("Connected via Zernio") : <>{t("Token expires")}{" "}
-                    {account.tokenExpiresAt
-                      ? new Date(account.tokenExpiresAt).toLocaleDateString(locale)
-                      : t("not available")}</>}{" "}
+                    {account.provider === "ZERNIO" ? (
+                      t("Connected via Zernio")
+                    ) : account.isUnifiedLogin ? (
+                      <>
+                        {t("Connected via Unified Login")} ·{" "}
+                        {t("Token never expires")}
+                      </>
+                    ) : (
+                      <>
+                        {t("Token expires")}{" "}
+                        {account.tokenExpiresAt
+                          ? new Date(account.tokenExpiresAt).toLocaleDateString(locale)
+                          : t("not available")}
+                      </>
+                    )}{" "}
                     · {account.webhookSubscribed ? t("Webhook ready") : t("Webhook pending")}
                   </p>
                 </div>
@@ -228,6 +339,64 @@ export default function SettingsPage() {
             {t("Connect using your own Meta app")}
           </a>
         </div>
+
+        {canManageMembers && (
+          <form
+            onSubmit={connectUnifiedToken}
+            className="mt-6 space-y-3 border-t border-border pt-4"
+          >
+            <h3 className="text-sm font-semibold">{t("Connect with Unified Login")}</h3>
+            <p className="text-xs text-muted">
+              {t("For newer Meta apps that only offer Unified Login. Generate a system-user token in Meta's Unified Login settings and paste it here.")}
+            </p>
+            <label htmlFor="unified-token" className="block text-sm font-medium">
+              {t("System-user token")}
+            </label>
+            <input
+              id="unified-token"
+              type="password"
+              autoComplete="off"
+              value={unifiedToken}
+              onChange={(event) => setUnifiedToken(event.target.value)}
+              placeholder={t("Paste the token from Meta")}
+              required
+              className="w-full rounded border border-border bg-surface px-4 py-2 text-sm text-foreground outline-none transition-colors focus:border-accent/40"
+            />
+            {unifiedAccounts.length > 0 && (
+              <>
+                <label htmlFor="unified-account" className="block text-sm font-medium">
+                  {t("Account")}
+                </label>
+                <select
+                  id="unified-account"
+                  value={unifiedAccountId}
+                  onChange={(event) => setUnifiedAccountId(event.target.value)}
+                  required
+                  className="w-full rounded border border-border bg-surface px-3 py-2 text-sm text-foreground outline-none transition-colors focus:border-accent/40"
+                >
+                  {unifiedAccounts.map((account) => (
+                    <option key={account.id} value={account.id}>
+                      @{account.username}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-muted">
+                  {t("This token covers more than one Instagram account. Pick the account to connect.")}
+                </p>
+              </>
+            )}
+            {unifiedError && (
+              <p role="alert" className="text-sm text-error">{unifiedError}</p>
+            )}
+            <button
+              type="submit"
+              disabled={busy === "unified" || !unifiedToken}
+              className="rounded bg-accent px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
+            >
+              {busy === "unified" ? t("Connecting...") : t("Connect account")}
+            </button>
+          </form>
+        )}
       </section>
 
       <section className="panel rounded p-4 sm:p-6">
@@ -305,6 +474,7 @@ export default function SettingsPage() {
               value={inviteEmail}
               onChange={(event) => setInviteEmail(event.target.value)}
               placeholder="teammate@agency.com"
+              aria-label={t("Email address")}
               className="rounded border border-border bg-surface px-4 py-2 text-sm text-foreground outline-none transition-colors focus:border-accent/40"
               required
             />
@@ -313,6 +483,7 @@ export default function SettingsPage() {
               onChange={(event) =>
                 setInviteRole(event.target.value as "ADMIN" | "MEMBER")
               }
+              aria-label={t("Role")}
               className="rounded border border-border bg-surface px-3 py-2 text-sm text-foreground outline-none transition-colors focus:border-accent/40"
             >
               <option value="MEMBER">{t("Member")}</option>

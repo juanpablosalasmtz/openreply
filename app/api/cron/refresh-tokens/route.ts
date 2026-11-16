@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/client";
-import { decryptToken, encryptToken } from "@/lib/meta/oauth";
-import { refreshLongLivedToken } from "@/lib/meta/client";
+import { refreshInstagramAccountToken } from "@/lib/meta/token-refresh";
+
+// Vercel Hobby defaults functions to 10 s; token refresh loops over accounts
+// calling the Meta Graph API, so give it the 60 s Hobby ceiling.
+export const maxDuration = 60;
 
 const DAYS_BEFORE_EXPIRY = 10;
 
@@ -42,7 +45,9 @@ export async function GET(request: NextRequest) {
       id: true,
       workspaceId: true,
       username: true,
+      provider: true,
       accessToken: true,
+      isUnifiedLogin: true,
     },
   });
 
@@ -55,19 +60,7 @@ export async function GET(request: NextRequest) {
 
   for (const account of accountsToRefresh) {
     try {
-      const currentToken = decryptToken(account.accessToken);
-      const { accessToken: newToken, expiresIn } =
-        await refreshLongLivedToken(currentToken);
-      const encryptedToken = encryptToken(newToken);
-      const newExpiry = new Date(Date.now() + expiresIn * 1000);
-
-      await prisma.instagramAccount.update({
-        where: { id: account.id },
-        data: {
-          accessToken: encryptedToken,
-          tokenExpiresAt: newExpiry,
-        },
-      });
+      await refreshInstagramAccountToken(account);
 
       results.push({
         instagramAccountId: account.id,

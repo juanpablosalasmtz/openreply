@@ -21,6 +21,8 @@ OpenReply is free, MIT-licensed software running on your own infrastructure, wit
 > [openreply.diwen.dev](https://openreply.diwen.dev) is a demo of the dashboard, not a service you can sign up for. Creating an account there will never send a DM for you, and there is no hosted plan to upgrade to.
 >
 > A working instance needs your deployed fork, a public HTTPS URL, PostgreSQL, Redis, a running worker, and an Instagram connection. Choose optional paid Zernio or your own Meta app. [docs/setup.md](docs/setup.md) walks through all of it.
+>
+> To try the full comment → DM loop locally with no Instagram account and no real messages, use [demo mode](docs/demo.md): set `DEMO_MODE=1`, run `npm run db:seed-demo`, and simulate comments from a campaign page.
 
 > If this saves you a subscription or a weekend of building, a star on the repo genuinely helps other people find it.
 
@@ -61,7 +63,7 @@ The web app receives the webhook and serves the dashboard. A separate worker pro
 
 ## Quick start
 
-1. **Choose your Instagram connection.** [Zernio](docs/zernio.md) is recommended if you want to avoid setting up your own Meta app. It is a paid service and sponsor, not a hosted OpenReply plan. Or follow the existing [direct Meta setup](docs/setup.md#the-meta-app).
+1. **Choose your Instagram connection.** [Zernio](docs/zernio.md) is recommended if you want to avoid setting up your own Meta app. It is a paid service and sponsor, not a hosted OpenReply plan. Or follow the existing [direct Meta setup](docs/setup.md#the-meta-app) — the standalone [Meta app guide](docs/meta-app.md) walks through the whole Meta console flow, from creating the app to App Review and the first test campaign.
 2. **Deploy the app and worker.** Both paths need PostgreSQL, Redis, a public HTTPS URL, and email delivery for magic-link sign-in.
 3. **Connect an Instagram Business or Creator account** in Settings, create a campaign, and test a keyword comment from another account.
 
@@ -92,6 +94,14 @@ npm run worker            # in a second terminal, this sends the DMs
 Two processes, always. `npm run dev` serves the app and receives webhooks. `npm run worker` is what actually sends the messages. If comments come in and no DM ever arrives, the worker is the first thing to check.
 
 Full environment variables and the production layout are in [docs/setup.md](docs/setup.md).
+
+## Deploying
+
+- **Docker Compose (plain Docker, single server):** [docs/deploy-docker.md](docs/deploy-docker.md) — web + worker + cron + Postgres + Redis from `docker-compose.prod.yml`, with a `.env.production` file, TLS/reverse-proxy guidance, and backup/recovery.
+- **Dokploy:** [docs/deploy-dokploy.md](docs/deploy-dokploy.md) — two Applications (web + worker) plus Postgres/Redis services on your own Dokploy server.
+- **Free split stack (recommended managed path):** [docs/deploy-split-stack.md](docs/deploy-split-stack.md) — web app on Vercel, Postgres on Neon, Redis on Upstash, worker on Render, all free tiers, with the full walkthrough in [docs/production.md](docs/production.md).
+
+Whichever path you pick, the instance needs a public HTTPS URL, PostgreSQL, Redis, a running worker, and email delivery for magic-link sign-in — and the web app and worker must share the same `DATABASE_URL`, `REDIS_URL`, and `ENCRYPTION_KEY`.
 
 ## Set it up with your AI assistant
 

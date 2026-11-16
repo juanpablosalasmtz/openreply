@@ -1,8 +1,26 @@
+// Load .env for local dev / Codespaces. dotenv silently does nothing when
+// no .env file exists (production platforms inject env vars), and it never
+// overrides variables already set in the environment. Without this, the
+// worker runs with no DATABASE_URL/REDIS_URL locally because tsx does not
+// load .env the way `next dev` does.
+import "dotenv/config";
+
 import { createDMWorker } from "@/lib/queue/dm-worker";
 import { recordWorkerHeartbeat } from "@/lib/ops/worker-health";
 import { reconcileComments } from "@/lib/polling/comment-reconciler";
 import { attachPendingNextReels } from "@/lib/automation/attach-next-reel";
+import { isDemoMode } from "@/lib/env";
 import os from "node:os";
+
+// Demo mode never sends real DMs, so the real worker has nothing safe to
+// do here: refuse to start instead of running a queue that can only fail
+// its sends. Simulations run through POST /api/demo/simulate-comment.
+if (isDemoMode()) {
+  console.log(
+    "[DM Worker] DEMO_MODE=1 — worker will not start. Demo mode never sends real Instagram messages; use the simulate endpoint instead (see docs/demo.md)."
+  );
+  process.exit(0);
+}
 
 const worker = createDMWorker();
 const startedAt = new Date().toISOString();

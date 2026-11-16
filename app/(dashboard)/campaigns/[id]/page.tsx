@@ -13,6 +13,8 @@ import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import CampaignPreview, { type PreviewTab } from "@/components/campaign-preview";
+import ErrorState from "@/components/ui/error-state";
+import StatusBadge from "@/components/status-badge";
 
 interface Campaign {
   id: string;
@@ -53,6 +55,14 @@ interface Campaign {
     clicks: number;
     ctr: number;
   };
+  recentLogs?: Array<{
+    id: string;
+    commenterName: string | null;
+    commentText: string;
+    status: string;
+    errorMessage: string | null;
+    createdAt: string;
+  }>;
 }
 
 type Tab = "insights" | "preview";
@@ -65,23 +75,94 @@ export default function CampaignDetailPage() {
   const [campaign, setCampaign] = useState<Campaign | null>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+  const [loadError, setLoadError] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [postThumb, setPostThumb] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("insights");
   const [previewTab, setPreviewTab] = useState<PreviewTab>("dm");
   const [busy, setBusy] = useState(false);
 
+  // Demo mode only: whether this instance runs in demo mode, plus the
+  // simulate-a-comment form state. demoMode stays null until the status
+  // check resolves, so the panel never flashes on a real instance.
+  const [demoMode, setDemoMode] = useState<boolean | null>(null);
+  const [simUsername, setSimUsername] = useState("");
+  const [simComment, setSimComment] = useState("");
+  const [simLoading, setSimLoading] = useState(false);
+  const [simError, setSimError] = useState<string | null>(null);
+  const [simResult, setSimResult] = useState<{
+    matched: boolean;
+    matchedKeyword: string | null;
+    dmText: string | null;
+    campaignName: string;
+  } | null>(null);
+
   useEffect(() => {
-    fetch("/api/automations", { cache: "no-store" })
+    fetch("/api/demo/status", { cache: "no-store" })
       .then((r) => r.json())
-      .then((payload) => {
-        if (!payload.success) return setNotFound(true);
-        const found = (payload.data as Campaign[]).find((c) => c.id === id);
-        if (!found) return setNotFound(true);
-        setCampaign(found);
-      })
-      .catch(() => setNotFound(true))
-      .finally(() => setLoading(false));
+      .then((payload) => setDemoMode(payload?.data?.demoMode === true))
+      .catch(() => setDemoMode(false));
+  }, []);
+
+  async function simulateComment() {
+    if (!campaign) return;
+    setSimLoading(true);
+    setSimError(null);
+    setSimResult(null);
+    try {
+      const res = await fetch("/api/demo/simulate-comment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          campaignId: campaign.id,
+          commentText: simComment,
+          username: simUsername,
+        }),
+      });
+      const payload = await res.json().catch(() => null);
+      if (!res.ok || !payload?.success) {
+        setSimError(
+          payload?.error ?? `Simulation failed (${res.status}). Try again.`
+        );
+        return;
+      }
+      setSimResult(payload.data);
+    } catch {
+      setSimError("Simulation failed — the request did not reach the server. Try again.");
+    } finally {
+      setSimLoading(false);
+    }
+  }
+
+  async function loadCampaign() {
+    setLoading(true);
+    setNotFound(false);
+    setLoadError(false);
+    try {
+      const res = await fetch(`/api/campaigns/${id}`, { cache: "no-store" });
+      const payload = await res.json();
+      if (!payload.success) {
+        if (res.status === 404) setNotFound(true);
+        else setLoadError(true);
+        return;
+      }
+      setCampaign(payload.data as Campaign);
+    } catch {
+      setLoadError(true);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    // Deferred a tick so the initial state write doesn't cascade-render;
+    // same convention as the campaigns/logs pages.
+    const timer = window.setTimeout(() => {
+      void loadCampaign();
+    }, 0);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
   useEffect(() => {
@@ -115,13 +196,22 @@ export default function CampaignDetailPage() {
   async function toggleActive() {
     if (!campaign) return;
     setBusy(true);
+    setActionError(null);
+    const nextActive = !campaign.isActive;
+    // Optimistic flip, rolled back if the PATCH fails.
+    setCampaign({ ...campaign, isActive: nextActive });
     try {
-      await fetch(`/api/automations?id=${campaign.id}`, {
+      const res = await fetch(`/api/automations?id=${campaign.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ isActive: !campaign.isActive }),
+        body: JSON.stringify({ isActive: nextActive }),
       });
-      setCampaign({ ...campaign, isActive: !campaign.isActive });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.success) throw new Error(data?.error ?? "toggle failed");
+    } catch (err) {
+      console.error("Failed to toggle:", err);
+      setCampaign({ ...campaign, isActive: !nextActive });
+      setActionError(t("Could not update this campaign. Please try again."));
     } finally {
       setBusy(false);
     }
@@ -129,6 +219,9 @@ export default function CampaignDetailPage() {
 
   if (loading) {
     return <div className="panel h-64 rounded" />;
+  }
+  if (loadError) {
+    return <ErrorState onRetry={() => void loadCampaign()} />;
   }
   if (notFound || !campaign) {
     return (
@@ -325,7 +418,14 @@ export default function CampaignDetailPage() {
           </div>
         </div>
 
+        {actionError && (
+          <div role="alert" className="rounded-lg border border-error/20 bg-error/10 p-3 text-sm text-error">
+            {actionError}
+          </div>
+        )}
+
         {tab === "insights" && (
+          <div className="space-y-6">
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
             {metrics.map((m) => (
               <div key={m.label} className="panel rounded p-4">
@@ -335,6 +435,45 @@ export default function CampaignDetailPage() {
                 </p>
               </div>
             ))}
+          </div>
+
+          <div className="panel rounded p-4 sm:p-6">
+            <h2 className="text-sm font-semibold text-foreground">
+              {t("Recent DM logs")}
+            </h2>
+            {!campaign.recentLogs || campaign.recentLogs.length === 0 ? (
+              <p className="mt-3 text-sm text-muted">
+                {t("No DM logs for this campaign yet.")}
+              </p>
+            ) : (
+              <div className="mt-3 space-y-3">
+                {campaign.recentLogs.map((log) => (
+                  <div
+                    key={log.id}
+                    className="border-b border-border pb-3 last:border-0"
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
+                      <p className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
+                        @{log.commenterName ?? "unknown"}
+                      </p>
+                      <StatusBadge status={log.status} />
+                    </div>
+                    <p className="mt-1 truncate text-xs text-muted">
+                      {log.commentText}
+                    </p>
+                    {log.errorMessage && (
+                      <p className="mt-1 break-words text-xs text-error">
+                        {log.errorMessage}
+                      </p>
+                    )}
+                    <p className="mt-1 text-xs text-muted">
+                      {new Date(log.createdAt).toLocaleString()}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
           </div>
         )}
 
@@ -374,6 +513,87 @@ export default function CampaignDetailPage() {
             followUpMessage={campaign.followUpMessage ?? ""}
             followUpDelayMinutes={campaign.followUpDelayMinutes ?? 0}
           />
+          </div>
+        )}
+
+        {/* Demo mode only: simulate a comment against this campaign's real
+            keywords. Nothing is sent to Instagram; the result is written to
+            the DM Logs as a simulated row. */}
+        {demoMode === true && (
+          <div className="panel space-y-3 rounded p-4">
+            <h2 className="text-sm font-semibold text-foreground">
+              {t("Simulate a comment")}
+              <span className="ml-2 rounded bg-amber-500/15 px-2 py-0.5 text-xs font-semibold text-amber-600">
+                Demo
+              </span>
+            </h2>
+            <p className="text-xs text-muted">
+              {t("Runs this campaign's real keyword matcher against a comment you type. No message is sent to Instagram — the DM below is what would be sent.")}
+            </p>
+            <div className="space-y-2">
+              <label className="block text-xs font-medium text-muted" htmlFor="sim-username">
+                {t("Commenter username")}
+              </label>
+              <input
+                id="sim-username"
+                value={simUsername}
+                onChange={(e) => setSimUsername(e.target.value)}
+                placeholder="demo-fan"
+                className="w-full rounded border border-border bg-surface px-3 py-2 text-sm text-foreground"
+              />
+              <label className="block text-xs font-medium text-muted" htmlFor="sim-comment">
+                {t("Comment text")}
+              </label>
+              <input
+                id="sim-comment"
+                value={simComment}
+                onChange={(e) => setSimComment(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void simulateComment();
+                }}
+                placeholder={
+                  campaign.matchAnyWord
+                    ? "nice post!"
+                    : `please send me the ${campaign.keywords[0] ?? "link"}!`
+                }
+                className="w-full rounded border border-border bg-surface px-3 py-2 text-sm text-foreground"
+              />
+              <button
+                onClick={() => void simulateComment()}
+                disabled={simLoading || !simUsername.trim() || !simComment.trim()}
+                className="rounded bg-accent px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+              >
+                {simLoading ? t("Simulating…") : t("Simulate")}
+              </button>
+            </div>
+            {simError && (
+              <p role="alert" className="rounded border border-error/30 bg-error/10 px-3 py-2 text-sm text-error">
+                {simError}
+              </p>
+            )}
+            {simResult && (
+              <div role="status" className="space-y-2 rounded border border-border bg-surface px-3 py-2 text-sm">
+                {simResult.matched ? (
+                  <>
+                    <p className="text-foreground">
+                      {t("Matched keyword:")}{" "}
+                      <span className="font-semibold">
+                        {simResult.matchedKeyword ?? t("(any comment)")}
+                      </span>
+                    </p>
+                    <p className="text-xs text-muted">{t("DM that would be sent:")}</p>
+                    <p className="whitespace-pre-wrap text-foreground">{simResult.dmText}</p>
+                    <p className="text-xs text-muted">
+                      {t("Logged as a simulated row in DM Logs — nothing was sent to Instagram.")}
+                    </p>
+                  </>
+                ) : (
+                  <p className="text-foreground">
+                    {t("No keyword matched — no DM would be sent. This comment was still logged as a simulated no-match.")}
+                  </p>
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>
