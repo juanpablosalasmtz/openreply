@@ -3,6 +3,7 @@ import { getDMQueue, MESSAGE_JOB_NAME, POSTBACK_JOB_NAME } from '@/lib/queue/cli
 import { recordRecipientInteraction } from '@/lib/instagram/messaging-window';
 import { parseCommentEvents, parseMessageEvents, parsePostbackEvents, parseReadEvents } from '@/lib/meta/webhook';
 import { Prisma, type InstagramProvider } from '@/app/generated/prisma/client';
+import { recordDiag } from '@/lib/ops/diag';
 
 const OPENING_DM_READ_FALLBACK_DELAY_MS = 5 * 60 * 1000;
 type InstagramPayload = Parameters<typeof parseCommentEvents>[0];
@@ -17,6 +18,35 @@ export async function processInstagramWebhook({ payload: incoming, provider, wor
   });
   const accountMap = new Map(accounts.map(a => [a.instagramId, a]));
   const allowed = new Set(accountMap.keys());
+
+  // [diag] Trace every comments webhook: which account ids Meta sent, whether
+  // they match a connected account, and which fields each change carries.
+  const commentChanges = incoming.entry.flatMap(e =>
+    (e.changes ?? [])
+      .filter(c => c.field === 'comments')
+      .map(c => ({
+        entryId: e.id,
+        knownAccount: allowed.has(e.id),
+        hasCommentId: Boolean(c.value?.id ?? c.value?.comment_id),
+        hasFromId: Boolean(c.value?.from?.id),
+        fromIsOwner: c.value?.from?.id === e.id,
+        mediaId: c.value?.media?.id ?? c.value?.media_id ?? null,
+        originalMediaId: c.value?.media?.original_media_id ?? null,
+      }))
+  );
+  if (commentChanges.length > 0) {
+    await recordDiag(
+      `Comments webhook received: ${commentChanges.length} change(s), known account: ${commentChanges.some(c => c.knownAccount)}`,
+      {
+        provider,
+        receivedEntryIds: incoming.entry.map(e => e.id),
+        connectedAccountIds: [...allowed],
+        changes: commentChanges,
+      },
+      accounts[0]?.workspaceId ?? workspaceId ?? null
+    );
+  }
+
   const payload = { ...incoming, entry: incoming.entry.filter(e => allowed.has(e.id)) };
   if (!payload.entry.length) return;
   const webhookEvent = await prisma.webhookEvent.create({

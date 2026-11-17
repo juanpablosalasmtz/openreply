@@ -56,6 +56,10 @@ interface SweepStat {
   matched: number;
   alreadyReplied: number;
   enqueued: number;
+  fetched?: number;
+  missingFrom?: number;
+  ownComments?: number;
+  mediaChecked?: string[];
   errors: string[];
 }
 
@@ -207,9 +211,20 @@ async function sweepCampaign({
 
     // Keep only comments that (a) aren't the account's own, (b) match the
     // keyword, and (c) have no reply from the account owner yet.
+    // [diag] Count what Meta returned so the Diagnostics timeline shows why a
+    // comment was or was not picked up.
+    stat.fetched = (stat.fetched ?? 0) + comments.length;
+    stat.mediaChecked = [...(stat.mediaChecked ?? []), mediaId];
     const needsAction = comments.filter((c) => {
       const authorId = c.from?.id;
-      if (!authorId || authorId === account.instagramId) return false;
+      if (!authorId) {
+        stat.missingFrom = (stat.missingFrom ?? 0) + 1;
+        return false;
+      }
+      if (authorId === account.instagramId) {
+        stat.ownComments = (stat.ownComments ?? 0) + 1;
+        return false;
+      }
 
       const matched = automation.matchAnyWord
         ? true
@@ -334,8 +349,8 @@ async function recordSweep(
   workspaceId: string,
   stat: SweepStat
 ): Promise<void> {
-  // Only log when something happened or something went wrong.
-  if (stat.enqueued === 0 && stat.errors.length === 0) return;
+  // [diag] Temporarily log every sweep, including empty ones, so the
+  // Diagnostics timeline shows what each pass saw.
 
   await prisma.operationalEvent
     .create({
@@ -343,7 +358,7 @@ async function recordSweep(
         workspaceId,
         source: "SYSTEM",
         level: stat.errors.length > 0 ? "WARNING" : "INFO",
-        message: `Comment sweep "${stat.campaign}" [${stat.keywords}]: ${stat.enqueued} enqueued, ${stat.matched} matched, ${stat.alreadyReplied} already replied`,
+        message: `Comment sweep "${stat.campaign}" [${stat.keywords}]: ${stat.fetched ?? 0} fetched, ${stat.missingFrom ?? 0} without author, ${stat.matched} matched, ${stat.alreadyReplied} already replied, ${stat.enqueued} enqueued`,
         payload: { ...stat },
       },
     })
