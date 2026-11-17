@@ -40,6 +40,7 @@ import {
   type InstagramContext,
 } from "@/lib/instagram/provider";
 import { matchKeywords } from "@/lib/utils/keyword-matcher";
+import { recordDiag } from "@/lib/ops/diag";
 import {
   reserveDMSlot,
   releaseDMSlot,
@@ -417,6 +418,28 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
     },
     orderBy: { createdAt: "asc" },
   });
+
+  // [diag] Record which campaigns this comment was checked against and whether
+  // the keyword matched, without storing the comment text.
+  await recordDiag(
+    `Worker got comment: ${automations.length} campaign(s) for this post`,
+    {
+      source: job.data.source ?? null,
+      instagramAccountId,
+      mediaId,
+      originalMediaId: originalMediaId ?? null,
+      commentTextLength: (commentText ?? "").length,
+      campaigns: automations.map((a) => ({
+        name: a.name,
+        postId: a.postId,
+        matchAnyPost: a.matchAnyPost,
+        keywordMatched: a.matchAnyWord
+          ? true
+          : matchKeywords(commentText, a.keywords, a.wholeWordMatch).matched,
+      })),
+    },
+    automations[0]?.workspaceId ?? null
+  );
 
   for (const automation of automations) {
     // "Any word" campaigns fire on every comment; otherwise require a keyword hit.
