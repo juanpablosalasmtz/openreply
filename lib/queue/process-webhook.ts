@@ -36,7 +36,7 @@ export async function processInstagramWebhook({ payload: incoming, provider, wor
   );
   if (commentChanges.length > 0) {
     await recordDiag(
-      `Comments webhook received: known account ${commentChanges.some(c => c.knownAccount)}, media ${commentChanges.map(c => c.mediaId ?? 'none').join(',')}, original media ${commentChanges.map(c => c.originalMediaId ?? 'none').join(',')}, has author ${commentChanges.map(c => c.hasFromId).join(',')}`,
+      `Comments webhook received: ${commentChanges.length} change(s), known account: ${commentChanges.some(c => c.knownAccount)}`,
       {
         provider,
         receivedEntryIds: incoming.entry.map(e => e.id),

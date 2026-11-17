@@ -422,7 +422,7 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
   // [diag] Record which campaigns this comment was checked against and whether
   // the keyword matched, without storing the comment text.
   await recordDiag(
-    `Worker got comment on media ${mediaId}${originalMediaId ? ` (original ${originalMediaId})` : ""}: ${automations.length} campaign(s) for this post`,
+    `Worker got comment: ${automations.length} campaign(s) for this post`,
     {
       source: job.data.source ?? null,
       instagramAccountId,

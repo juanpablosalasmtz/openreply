@@ -358,7 +358,7 @@ async function recordSweep(
         workspaceId,
         source: "SYSTEM",
         level: stat.errors.length > 0 ? "WARNING" : "INFO",
-        message: `Comment sweep "${stat.campaign}" [${stat.keywords}]: ${stat.fetched ?? 0} fetched, ${stat.missingFrom ?? 0} without author, ${stat.matched} matched, ${stat.alreadyReplied} already replied, ${stat.enqueued} enqueued. Media checked: ${(stat.mediaChecked ?? []).join(',') || 'none'}${stat.errors.length ? `. Errors: ${stat.errors.join(' | ')}` : ''}`,
+        message: `Comment sweep "${stat.campaign}" [${stat.keywords}]: ${stat.fetched ?? 0} fetched, ${stat.missingFrom ?? 0} without author, ${stat.matched} matched, ${stat.alreadyReplied} already replied, ${stat.enqueued} enqueued`,
         payload: { ...stat },
       },
     })
